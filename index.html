@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>CORBEL</title>
+<style>
+  :root{
+    --ink:#e8e2d6;
+    --ink-dim:#9aa3a8;
+    --timber:#a8763e;
+    --rope:#c9b391;
+    --ember:#d4552a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#0a0d11;overflow:hidden}
+  body{
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+  #stage{position:fixed;inset:0}
+  canvas{display:block;width:100%;height:100%;touch-action:none;cursor:crosshair}
+
+  .hud{position:fixed;pointer-events:none;line-height:1.4;user-select:none;z-index:5;
+       text-shadow:0 1px 12px rgba(0,0,0,.75)}
+
+  #stock{top:22px;left:26px}
+  #stock .row{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+  #stock .sw{width:22px;height:5px;border-radius:1px}
+  #stock .n{font-variant-numeric:tabular-nums;font-size:20px}
+  #stock .lbl{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim)}
+  #stock .row.sel .lbl{color:var(--ink)}
+  #stock .row.out{opacity:.34}
+  #stock .key{font-size:10px;color:var(--ink-dim);opacity:.55}
+
+  #title{top:22px;left:50%;transform:translateX(-50%);text-align:center}
+  #title h1{font-size:15px;letter-spacing:.42em;font-weight:400;text-indent:.42em;opacity:.9}
+  #title .sub{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim);margin-top:5px}
+
+  #crossing{top:22px;right:26px;text-align:right}
+  #crossing .n{font-size:20px;font-variant-numeric:tabular-nums}
+  #crossing .lbl{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim)}
+  #crossing .lost{color:var(--ember);opacity:0;transition:opacity .4s}
+  #crossing.any-lost .lost{opacity:1}
+
+  #hint{bottom:20px;left:50%;transform:translateX(-50%);text-align:center;
+    font-size:11.5px;letter-spacing:.13em;color:var(--ink-dim)}
+  #hint b{color:var(--ink);font-weight:400;letter-spacing:.16em}
+
+  #cost{position:fixed;z-index:6;pointer-events:none;font:12px ui-monospace,Menlo,Consolas,monospace;
+    transform:translate(-50%,-50%);opacity:0;transition:opacity .1s;text-shadow:0 1px 8px #000}
+
+  #verdict{inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;
+    opacity:0;transition:opacity .55s ease;gap:10px}
+  #verdict.on{opacity:1}
+  #verdict .big{font-size:36px;letter-spacing:.3em;text-indent:.3em}
+  #verdict .small{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim)}
+  #verdict.fail .big{color:var(--ember)}
+
+  #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:14px;background:#0a0d11;z-index:50;transition:opacity .5s}
+  #boot.gone{opacity:0;pointer-events:none}
+  #boot .m{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-dim)}
+  #boot .err{color:var(--ember);max-width:520px;text-align:center;line-height:1.7;
+    font-size:12.5px;letter-spacing:.04em;text-transform:none}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+
+<div class="hud" id="stock">
+  <div class="row" id="rowTimber">
+    <div class="sw" style="background:var(--timber)"></div>
+    <span class="n" id="nTimber">0</span><span class="lbl">timber</span><span class="key">1</span>
+  </div>
+  <div class="row" id="rowRope">
+    <div class="sw" style="background:var(--rope);height:2px"></div>
+    <span class="n" id="nRope">0</span><span class="lbl">rope</span><span class="key">2</span>
+  </div>
+</div>
+
+<div class="hud" id="title">
+  <h1>CORBEL</h1>
+  <div class="sub" id="levelName">The First Crossing</div>
+</div>
+
+<div class="hud" id="crossing">
+  <div><span class="n" id="nAcross">0</span><span class="n" style="opacity:.4">/</span><span class="n" id="nTotal">0</span></div>
+  <div class="lbl">across</div>
+  <div class="lbl lost"><span id="nLost">0</span> lost</div>
+</div>
+
+<div class="hud" id="hint"></div>
+<div id="cost"></div>
+<div class="hud" id="verdict"><div class="big" id="vBig"></div><div class="small" id="vSmall"></div></div>
+
+<div id="boot"><div class="m" id="bootMsg">raising the scaffold</div></div>
+
+<script>
+// Boot watchdog. A dead renderer must say so rather than leave a black screen
+// with a live HUD painted over it.
+window.__corbelBooted = false;
+window.addEventListener('error', e => window.__corbelFail(e.message));
+window.__corbelFail = msg => {
+  const b = document.getElementById('boot'), m = document.getElementById('bootMsg');
+  if (!b || window.__corbelBooted) return;
+  b.classList.remove('gone');
+  m.className = 'err';
+  m.textContent = 'CORBEL could not start the renderer. ' + (msg || '') +
+    '  ·  vendor/three.module.js is loaded from disk, so this is a code fault, not a network one.';
+};
+setTimeout(() => { if (!window.__corbelBooted) window.__corbelFail('Renderer produced no frame within 8s.'); }, 8000);
+</script>
+
+<script type="module">
+import * as THREE from './vendor/three.module.js';   // 1.2MB — let it cache
+// sim.js changes constantly and the ES module cache will happily serve a stale
+// copy, which reads exactly like a code bug. Always refetch it in dev. Swap the
+// token for a build hash if this ever ships.
+const SIM = await import('./sim.js?v=' + Date.now());
+
+const {
+  W, H, CELL, DT, MAX_BEAM, MAX_ROPE, DECK_Y, LEFT_EDGE, RIGHT_EDGE, WALKER_R,
+  TUNE, LEVEL, S, capacity, findPoint, snapGrid, proposal, commit, removeLinkAt,
+  startTest, backToBuild, resetLevel, step,
+} = SIM;
+
+/* ============================================================================
+   Sim space is pixels (x right, y down). Three is metres (y up). One grid cell
+   is one metre, and the build plane is z = 0.
+   ========================================================================== */
+const U = CELL;                                  // px per world unit
+const wx = px => (px - W / 2) / U;
+const wy = py => -(py - DECK_Y) / U;
+const px_ = x => x * U + W / 2;
+const py_ = y => -y * U + DECK_Y;
+
+const SPAN_HALF = (RIGHT_EDGE - LEFT_EDGE) / 2 / U;
+const DECK_Z = 0.62;                             // planks are a road
+const WEB_Z  = 0.20;                             // bracing is sticks
+const WALKABLE_RISE = 1.2;                       // must match sim.js
+
+/* ------------------------------- renderer -------------------------------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x2f3a45, 22, 78);
+
+const camera = new THREE.PerspectiveCamera(34, 16 / 9, 0.1, 400);
+const LOOK = new THREE.Vector3(0, -0.75, 0);
+const CAM_Y = 3.1;                               // slightly above the deck, looking down onto it
+
+function resize(){
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  // Frame the span to a fixed half-width whatever the window shape, rather than
+  // only pulling back when it fails to fit.
+  const need = SPAN_HALF + 5.0;
+  const halfAngle = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  camera.position.z = Math.max(11, need / (halfAngle * camera.aspect));
+  camera.position.y = CAM_Y;
+  camera.updateProjectionMatrix();
+  camera.lookAt(LOOK);
+}
+addEventListener('resize', resize);
+
+/* -------------------------------- lighting ------------------------------- */
+// Warm key from behind-left, where the fires are. Cold sky fill everywhere else.
+scene.add(new THREE.HemisphereLight(0x8fa6b8, 0x141a20, 1.05));
+
+const key = new THREE.DirectionalLight(0xffb37a, 2.5);
+key.position.set(-15, 9, 7);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -16; key.shadow.camera.right = 16;
+key.shadow.camera.top = 12;   key.shadow.camera.bottom = -14;
+key.shadow.camera.near = 1;   key.shadow.camera.far = 60;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const rim = new THREE.DirectionalLight(0x6f92b5, 0.75);
+rim.position.set(9, 5, -12);
+scene.add(rim);
+
+const emberLight = new THREE.PointLight(0xff5f26, 26, 46, 2.0);
+emberLight.position.set(-17, 3.4, -9);
+scene.add(emberLight);
+
+/* --------------------------------- sky ----------------------------------- */
+function skyTexture(){
+  const cv = document.createElement('canvas');
+  cv.width = 512; cv.height = 512;
+  const g = cv.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0.00, '#161f2a');
+  grad.addColorStop(0.34, '#33414e');
+  grad.addColorStop(0.62, '#6d7a85');
+  grad.addColorStop(0.84, '#9c9789');
+  grad.addColorStop(1.00, '#6d6357');
+  g.fillStyle = grad; g.fillRect(0, 0, 512, 512);
+
+  // the fires they are running from
+  const glow = g.createRadialGradient(70, 400, 5, 70, 400, 300);
+  glow.addColorStop(0,   'rgba(255,120,52,0.62)');
+  glow.addColorStop(0.35,'rgba(214,84,40,0.24)');
+  glow.addColorStop(1,   'rgba(214,84,40,0)');
+  g.fillStyle = glow; g.fillRect(0, 120, 460, 392);
+
+  g.globalAlpha = 0.30; g.fillStyle = '#1b232c';
+  for (let i = 0; i < 6; i++){
+    const bx = 18 + i * 27;
+    g.beginPath();
+    g.moveTo(bx - 7, 420);
+    g.quadraticCurveTo(bx - 20, 300, bx - 4, 150);
+    g.lineTo(bx + 12, 150);
+    g.quadraticCurveTo(bx + 22, 302, bx + 9, 420);
+    g.closePath(); g.fill();
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const backdrop = new THREE.Mesh(
+  new THREE.PlaneGeometry(190, 108),
+  new THREE.MeshBasicMaterial({ map: skyTexture(), fog: false, depthWrite: false })
+);
+backdrop.position.set(-6, 8, -62);
+scene.add(backdrop);
+
+/* -------------------------------- terrain -------------------------------- */
+function rng(seed){
+  return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+
+function cliff(side, depth, zPos, colour, seed, castsShadow){
+  const r = rng(seed);
+  const sh = new THREE.Shape();
+  const lip = side < 0 ? wx(LEFT_EDGE) : wx(RIGHT_EDGE);
+  const out = side < 0 ? -30 : 30;
+  sh.moveTo(out, 0);
+  sh.lineTo(lip, 0);
+  let x = lip;
+  for (let y = -0.4; y > -17; y -= 1.15){          // undercut face, widening down
+    x += side * (0.10 + r() * 0.55);
+    sh.lineTo(x, y);
+  }
+  sh.lineTo(out, -18);
+  sh.closePath();
+  const geo = new THREE.ExtrudeGeometry(sh, { depth, bevelEnabled: false });
+  geo.translate(0, 0, -depth / 2);
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    color: colour, roughness: 0.98, metalness: 0, flatShading: true,
+  }));
+  m.position.z = zPos;
+  m.receiveShadow = true;
+  if (castsShadow) m.castShadow = true;
+  return m;
+}
+// Three depth layers each side so the gorge has real recession.
+scene.add(cliff(-1, 3.2, 1.1, 0x2b333c, 7,  true));
+scene.add(cliff( 1, 3.2, 1.1, 0x2b333c, 13, true));
+scene.add(cliff(-1, 5.0, -3.4, 0x222a33, 21, false));
+scene.add(cliff( 1, 5.0, -3.4, 0x222a33, 29, false));
+scene.add(cliff(-1, 7.0, -10.5, 0x1a212a, 33, false));
+scene.add(cliff( 1, 7.0, -10.5, 0x1a212a, 41, false));
+
+// Gorge floor. Unlit on purpose — the chasm must read as a hole, and a lit
+// plane down there catches the key light and turns the gorge into a pale wash.
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(90, 60),
+  new THREE.MeshBasicMaterial({ color: 0x05070a })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.set(0, -19, -6);
+scene.add(floor);
+
+// Distant ridgelines for parallax.
+for (let i = 0; i < 3; i++){
+  const r = rng(101 + i * 17);
+  const sh = new THREE.Shape();
+  sh.moveTo(-70, -30);
+  for (let x = -70; x <= 70; x += 6) sh.lineTo(x, 1 + Math.sin(x * 0.09 + i) * 1.6 + r() * 2.4 - i * 1.1);
+  sh.lineTo(70, -30);
+  sh.closePath();
+  const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), new THREE.MeshBasicMaterial({
+    color: [0x46525e, 0x3a4550, 0x2f3a44][i], fog: true,
+  }));
+  m.position.set(0, 1.4 + i * 0.5, -46 + i * 9);
+  scene.add(m);
+}
+
+// Mist. Broad soft planes drifting through the chasm — in 3D these read as
+// depth instead of the stacked ellipses the 2D version had.
+const mistTex = (() => {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const g = cv.getContext('2d');
+  const rad = g.createRadialGradient(128, 128, 8, 128, 128, 126);
+  rad.addColorStop(0, 'rgba(150,170,186,0.30)');
+  rad.addColorStop(0.55, 'rgba(140,162,180,0.11)');
+  rad.addColorStop(1, 'rgba(140,162,180,0)');
+  g.fillStyle = rad; g.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(cv);
+})();
+// Sparse and faint, and kept well below the deck. Dense bright mist fills the
+// chasm and reads as a solid slab instead of depth.
+const mist = [];
+for (let i = 0; i < 8; i++){
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(18 + Math.random() * 14, 4 + Math.random() * 3),
+    new THREE.MeshBasicMaterial({ map: mistTex, transparent: true, depthWrite: false,
+      opacity: 0.10 + Math.random() * 0.10, fog: true })
+  );
+  m.position.set((Math.random() - 0.5) * 20, -5.5 - Math.random() * 10, -8 + Math.random() * 10);
+  m.userData = { sp: 0.10 + Math.random() * 0.24, ph: Math.random() * 6.28, x0: m.position.x };
+  mist.push(m); scene.add(m);
+}
+
+/* ------------------------------- structure -------------------------------- */
+const MAX_MEMBERS = 420;
+const ROPE_SEGS = 9;
+
+const timberMat = new THREE.MeshStandardMaterial({ roughness: 0.82, metalness: 0.0, flatShading: true });
+const timber = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), timberMat, MAX_MEMBERS);
+timber.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+timber.castShadow = true; timber.receiveShadow = true;
+timber.frustumCulled = false;
+scene.add(timber);
+
+const ropeMat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
+const rope = new THREE.InstancedMesh(
+  new THREE.CylinderGeometry(0.045, 0.045, 1, 5), ropeMat, MAX_MEMBERS * ROPE_SEGS);
+rope.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+rope.castShadow = true;
+rope.frustumCulled = false;
+scene.add(rope);
+
+const jointMat = new THREE.MeshStandardMaterial({ color: 0x4a361f, roughness: 0.7 });
+const joints = new THREE.InstancedMesh(new THREE.SphereGeometry(0.11, 8, 6), jointMat, MAX_MEMBERS);
+joints.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+joints.castShadow = true; joints.frustumCulled = false;
+scene.add(joints);
+
+// Pinned anchors get visible ironwork so the player can see what's solid.
+const anchorMat = new THREE.MeshStandardMaterial({ color: 0x555c63, roughness: 0.55, metalness: 0.65 });
+const anchors = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.13, 0.17, 0.72, 8), anchorMat, 16);
+anchors.frustumCulled = false; anchors.castShadow = true;
+scene.add(anchors);
+
+/* -------------------------------- walkers -------------------------------- */
+const MAX_W = 64;
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0x0f1419, roughness: 1 });
+const bodies = new THREE.InstancedMesh(new THREE.CapsuleGeometry(0.13, 0.30, 3, 7), bodyMat, MAX_W);
+const heads  = new THREE.InstancedMesh(new THREE.SphereGeometry(0.105, 7, 6), bodyMat, MAX_W);
+const packs  = new THREE.InstancedMesh(new THREE.SphereGeometry(0.115, 6, 5), bodyMat, MAX_W);
+for (const m of [bodies, heads, packs]){
+  m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  m.castShadow = true; m.frustumCulled = false;
+  scene.add(m);
+}
+
+/* ------------------------------ build overlay ---------------------------- */
+const gridGeo = new THREE.BufferGeometry();
+{
+  const v = [];
+  const x0 = wx(LEFT_EDGE) - 3.4, x1 = wx(RIGHT_EDGE) + 3.4;
+  for (let x = Math.ceil(x0); x <= x1; x++){ v.push(x, 0.02, 0, x, 5.2, 0); }
+  for (let y = 0; y <= 5; y++){ v.push(x0, y + 0.02, 0, x1, y + 0.02, 0); }
+  gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+}
+const grid = new THREE.LineSegments(gridGeo,
+  new THREE.LineBasicMaterial({ color: 0x9fb4c2, transparent: true, opacity: 0.10, fog: false }));
+scene.add(grid);
+
+const ghost = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshBasicMaterial({ color: 0xd8a866, transparent: true, opacity: 0.62, fog: false })
+);
+ghost.visible = false; scene.add(ghost);
+
+const snapRing = new THREE.Mesh(
+  new THREE.TorusGeometry(0.28, 0.028, 6, 20),
+  new THREE.MeshBasicMaterial({ color: 0xe8e2d6, transparent: true, opacity: 0.85, fog: false })
+);
+snapRing.visible = false; scene.add(snapRing);
+
+/* ------------------------------ sync helpers ----------------------------- */
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(),
+      _p = new THREE.Vector3(), _s = new THREE.Vector3(),
+      _a = new THREE.Vector3(), _b = new THREE.Vector3(), _d = new THREE.Vector3(),
+      _up = new THREE.Vector3(0, 1, 0), _col = new THREE.Color();
+
+// Place a unit box/cylinder spanning a→b. `axis` is the geometry's long axis.
+function spanMatrix(ax, ay, az, bx, by, bz, thick, depth, axis){
+  _a.set(ax, ay, az); _b.set(bx, by, bz);
+  _d.subVectors(_b, _a);
+  const len = _d.length() || 1e-5;
+  _p.addVectors(_a, _b).multiplyScalar(0.5);
+  if (axis === 'y'){
+    _q.setFromUnitVectors(_up, _d.normalize());
+    _s.set(1, len, 1);
+  } else {
+    _q.setFromUnitVectors(new THREE.Vector3(1, 0, 0), _d.normalize());
+    _s.set(len, thick, depth);
+  }
+  return _m.compose(_p, _q, _s);
+}
+
+function stressColour(s){
+  const k = Math.min(1, Math.max(0, s));
+  return k < 0.55
+    ? _col.setRGB(...srgb(168 + 33 * k / 0.55, 118 - 4 * k / 0.55, 62 - 14 * k / 0.55))
+    : _col.setRGB(...srgb(201 + 34 * (k - 0.55) / 0.45,
+                          114 - 45 * (k - 0.55) / 0.45,
+                          48 - 8 * (k - 0.55) / 0.45));
+}
+const srgb = (r, g, b) => [r / 255, g / 255, b / 255].map(v => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+
+function syncStructure(){
+  let ti = 0, ri = 0, ji = 0;
+
+  for (const l of S.links){
+    const a = S.points[l.a], b = S.points[l.b];
+    const ax = wx(a.x), ay = wy(a.y), bx = wx(b.x), by = wy(b.y);
+
+    if (l.type === 'beam'){
+      if (ti >= MAX_MEMBERS) continue;
+      // The same slope rule that decides walkability decides the look: shallow
+      // members are decking, steep ones are bracing.
+      const deckish = Math.abs(b.y - a.y) <= Math.abs(b.x - a.x) * WALKABLE_RISE;
+      const th = deckish ? 0.19 : 0.15;
+      const dz = deckish ? DECK_Z : WEB_Z;
+      timber.setMatrixAt(ti, spanMatrix(ax, ay, 0, bx, by, 0, th, dz, 'x'));
+      if (l.broken) _col.setRGB(0.055, 0.048, 0.042);
+      else stressColour(l.stress);
+      timber.setColorAt(ti, _col);
+      ti++;
+    } else {
+      const d = Math.hypot(b.x - a.x, b.y - a.y);
+      const slack = Math.max(0, l.rest - d) / U;
+      if (l.broken) _col.setRGB(0.05, 0.045, 0.04);
+      else if (l.stress > 0.05) stressColour(Math.max(l.stress, 0.15));
+      else _col.setRGB(...srgb(201, 179, 145));
+      // Sample the catenary so slack rope actually hangs.
+      let px0 = ax, py0 = ay;
+      for (let k = 1; k <= ROPE_SEGS; k++){
+        if (ri >= MAX_MEMBERS * ROPE_SEGS) break;
+        const t = k / ROPE_SEGS;
+        const mt = 1 - t;
+        const cx = (ax + bx) / 2, cy = (ay + by) / 2 - slack * 1.5;
+        const px1 = mt * mt * ax + 2 * mt * t * cx + t * t * bx;
+        const py1 = mt * mt * ay + 2 * mt * t * cy + t * t * by;
+        rope.setMatrixAt(ri, spanMatrix(px0, py0, 0, px1, py1, 0, 1, 1, 'y'));
+        rope.setColorAt(ri, _col);
+        ri++;
+        px0 = px1; py0 = py1;
+      }
+    }
+  }
+
+  for (const p of S.points){
+    if (p.pinned || ji >= MAX_MEMBERS) continue;
+    joints.setMatrixAt(ji++, _m.compose(_p.set(wx(p.x), wy(p.y), 0),
+      _q.identity(), _s.set(1, 1, 1)));
+  }
+
+  let ai = 0;
+  for (const p of S.points){
+    if (!p.pinned || ai >= 16) continue;
+    _q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+    anchors.setMatrixAt(ai++, _m.compose(_p.set(wx(p.x), wy(p.y), 0), _q, _s.set(1, 1, 1)));
+  }
+
+  timber.count = ti; rope.count = ri; joints.count = ji; anchors.count = ai;
+  timber.instanceMatrix.needsUpdate = true;
+  rope.instanceMatrix.needsUpdate = true;
+  joints.instanceMatrix.needsUpdate = true;
+  anchors.instanceMatrix.needsUpdate = true;
+  if (timber.instanceColor) timber.instanceColor.needsUpdate = true;
+  if (rope.instanceColor) rope.instanceColor.needsUpdate = true;
+}
+
+const HIDE = new THREE.Matrix4().makeScale(0, 0, 0);
+function syncWalkers(){
+  let n = 0;
+  for (const w of S.walkers){
+    if (w.safe || n >= MAX_W) continue;
+    const x = wx(w.x), y = wy(w.y);
+    const bob = Math.sin(w.bob * 6 + w.phase) * 0.035;
+    const lean = w.fell ? 0.6 : 0;
+    const sc = w.child ? 0.66 : 1;
+    _q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -lean);
+    bodies.setMatrixAt(n, _m.compose(_p.set(x, y + bob + 0.02, 0), _q, _s.set(w.bulk * sc, sc, sc)));
+    heads .setMatrixAt(n, _m.compose(_p.set(x, y + bob + 0.30 * sc, 0), _q, _s.set(sc, sc, sc)));
+    if (w.pack) packs.setMatrixAt(n, _m.compose(_p.set(x - 0.16 * sc, y + bob + 0.10 * sc, -0.11), _q, _s.set(sc, sc * 1.25, sc)));
+    else        packs.setMatrixAt(n, HIDE);
+    n++;
+  }
+  bodies.count = heads.count = packs.count = n;
+  bodies.instanceMatrix.needsUpdate = true;
+  heads.instanceMatrix.needsUpdate = true;
+  packs.instanceMatrix.needsUpdate = true;
+}
+
+/* --------------------------------- input --------------------------------- */
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const buildPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+const hitPt = new THREE.Vector3();
+let hover = null, hoverClient = [0, 0];
+
+function toSim(e){
+  const r = canvas.getBoundingClientRect();
+  ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+  ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+  ray.setFromCamera(ndc, camera);
+  if (!ray.ray.intersectPlane(buildPlane, hitPt)) return null;
+  hoverClient = [e.clientX, e.clientY];
+  return [px_(hitPt.x), py_(hitPt.y)];
+}
+
+canvas.addEventListener('pointerdown', e => {
+  if (S.phase !== 'build') return;
+  const p = toSim(e); if (!p) return;
+  if (e.button === 2){ removeLinkAt(p[0], p[1]); return; }
+  let i = findPoint(p[0], p[1]);
+  if (i < 0){
+    const [gx, gy] = snapGrid(p[0], p[1]);
+    i = findPoint(gx, gy, 1);
+    if (i < 0) return;              // a member must start from something real
+  }
+  S.drag = { from: i };
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => { hover = toSim(e); });
+canvas.addEventListener('pointerup', e => {
+  if (S.phase !== 'build' || !S.drag) return;
+  const p = toSim(e); if (p) commit(p[0], p[1]); else S.drag = null;
+});
+canvas.addEventListener('pointerleave', () => { hover = null; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+addEventListener('keydown', e => {
+  if (e.key === '1') S.tool = 'beam';
+  else if (e.key === '2') S.tool = 'rope';
+  else if (e.key === 'Tab'){ e.preventDefault(); S.tool = S.tool === 'beam' ? 'rope' : 'beam'; }
+  else if (e.key === ' '){ e.preventDefault(); S.phase === 'build' ? startTest() : backToBuild(); }
+  else if (e.key === 'r' || e.key === 'R') resetLevel();
+  else if (e.key === 'Escape') S.drag = null;
+});
+
+function syncOverlay(){
+  const building = S.phase === 'build';
+  grid.visible = building;
+  ghost.visible = false;
+  snapRing.visible = false;
+  const cost = document.getElementById('cost');
+  cost.style.opacity = 0;
+  if (!building || !hover) return;
+
+  if (!S.drag){
+    const i = findPoint(hover[0], hover[1]);
+    if (i >= 0){
+      const p = S.points[i];
+      snapRing.position.set(wx(p.x), wy(p.y), 0);
+      snapRing.visible = true;
+    }
+    return;
+  }
+
+  const pr = proposal(hover[0], hover[1]);
+  if (!pr) return;
+  const a = S.points[pr.from];
+  const ok = !pr.bad;
+  ghost.material.color.set(ok ? (S.tool === 'rope' ? 0xc9b391 : 0xd8a866) : 0xd4552a);
+  ghost.material.opacity = ok ? 0.62 : 0.4;
+  ghost.matrixAutoUpdate = false;
+  ghost.matrix.copy(spanMatrix(wx(a.x), wy(a.y), 0, wx(pr.tx), wy(pr.ty), 0,
+    S.tool === 'rope' ? 0.09 : 0.19, S.tool === 'rope' ? 0.09 : DECK_Z, 'x'));
+  ghost.visible = true;
+
+  const label = pr.bad === 'long'  ? (S.tool === 'rope' ? 'too long' : 'timber too long')
+              : pr.bad === 'stock' ? 'not enough ' + (S.tool === 'rope' ? 'rope' : 'timber')
+              : pr.bad === 'rock'  ? 'solid rock'
+              : pr.bad === 'dup'   ? 'already joined'
+              : pr.bad ? '' : pr.cost + (S.tool === 'rope' ? ' rope' : ' timber');
+  if (label){
+    const mid = new THREE.Vector3((wx(a.x) + wx(pr.tx)) / 2, (wy(a.y) + wy(pr.ty)) / 2 + 0.45, 0)
+      .project(camera);
+    const r = canvas.getBoundingClientRect();
+    cost.textContent = label;
+    cost.style.color = ok ? 'rgba(232,226,214,.92)' : '#d4552a';
+    cost.style.left = (r.left + (mid.x * 0.5 + 0.5) * r.width) + 'px';
+    cost.style.top  = (r.top + (-mid.y * 0.5 + 0.5) * r.height) + 'px';
+    cost.style.opacity = 1;
+  }
+}
+
+/* ----------------------------------- HUD --------------------------------- */
+const el = id => document.getElementById(id);
+function syncHUD(){
+  el('nTimber').textContent = S.stock.beam;
+  el('nRope').textContent   = S.stock.rope;
+  el('rowTimber').className = 'row' + (S.tool === 'beam' ? ' sel' : '') + (S.stock.beam ? '' : ' out');
+  el('rowRope').className   = 'row' + (S.tool === 'rope' ? ' sel' : '') + (S.stock.rope ? '' : ' out');
+  el('nAcross').textContent = S.across;
+  el('nTotal').textContent  = LEVEL.walkers;
+  el('nLost').textContent   = S.lost;
+  el('crossing').className  = 'hud' + (S.lost ? ' any-lost' : '');
+  el('levelName').textContent = LEVEL.name;
+  el('hint').innerHTML = S.phase === 'build'
+    ? 'drag between joints to build &nbsp;·&nbsp; <b>1</b> timber &nbsp; <b>2</b> rope &nbsp;·&nbsp; right-click removes &nbsp;·&nbsp; <b>space</b> to send them across'
+    : S.phase === 'test' ? '<b>space</b> to call it off'
+    : '<b>space</b> to go back and rebuild &nbsp;·&nbsp; <b>R</b> to start over';
+
+  const v = el('verdict');
+  if (S.phase === 'won' || S.phase === 'lost'){
+    v.className = 'hud on' + (S.phase === 'lost' ? ' fail' : '');
+    el('vBig').textContent = S.phase === 'won' ? 'ALL ACROSS' : 'THE SPAN GAVE';
+    el('vSmall').textContent = S.phase === 'won'
+      ? LEVEL.walkers + ' souls · the next crowd is larger'
+      : S.lost + (S.lost === 1 ? ' soul lost to the gorge' : ' souls lost to the gorge');
+  } else v.className = 'hud';
+}
+
+/* ------------------------------- main loop -------------------------------- */
+let last = performance.now(), acc = 0, lastPaint = 0, shakeT = 0;
+
+function render(){
+  // camera shake, driven by the sim's own impulse value
+  if (S.shake > 0.3){
+    shakeT += 0.1;
+    camera.position.x = Math.sin(shakeT * 7.3) * S.shake * 0.012;
+    camera.position.y = CAM_Y + Math.cos(shakeT * 9.1) * S.shake * 0.010;
+  } else {
+    camera.position.x *= 0.85;
+    camera.position.y += (CAM_Y - camera.position.y) * 0.15;
+  }
+  camera.lookAt(LOOK);
+
+  const t = performance.now() * 0.001;
+  for (const m of mist){
+    m.position.x = m.userData.x0 + Math.sin(t * m.userData.sp + m.userData.ph) * 5.5;
+    m.lookAt(camera.position);
+  }
+  emberLight.intensity = 24 + Math.sin(t * 0.9) * 5;
+
+  syncStructure();
+  syncWalkers();
+  syncOverlay();
+  renderer.render(scene, camera);
+
+  if (!window.__corbelBooted){
+    window.__corbelBooted = true;
+    document.getElementById('boot').classList.add('gone');
+  }
+  lastPaint = performance.now();
+}
+
+function frame(now){
+  const raw = (now - last) / 1000;
+  last = now;
+  acc += Math.min(raw, 0.1);
+  while (acc >= DT){ step(DT); acc -= DT; }
+  syncHUD();
+  render();
+  requestAnimationFrame(frame);
+}
+
+// RAF halts in a hidden panel; keep the sim on wall-clock so it never wedges.
+setInterval(() => {
+  const now = performance.now();
+  if (now - lastPaint > 400){
+    const dt = Math.min((now - last) / 1000, 0.5);
+    last = now;
+    let n = Math.floor(dt / DT);
+    while (n-- > 0) step(DT);
+    syncHUD();
+  }
+}, 250);
+
+/* ------------------------- headless test surface -------------------------- */
+window.CORBEL = {
+  S, LEVEL, TUNE, SIM, THREE,
+  step, render, resetLevel, startTest, backToBuild, capacity,
+  place(ax, ay, bx, by, type = 'beam'){
+    let a = SIM.findPoint(ax, ay, CELL * 0.5);
+    if (a < 0){ if (SIM.inRock(ax, ay)) return false; a = SIM.addPoint(ax, ay, false); }
+    let b = SIM.findPoint(bx, by, CELL * 0.5);
+    if (b < 0){ if (SIM.inRock(bx, by)) return false; b = SIM.addPoint(bx, by, false); }
+    if (a === b || SIM.linkExists(a, b)) return false;
+    const rest = Math.hypot(S.points[b].x - S.points[a].x, S.points[b].y - S.points[a].y);
+    const cost = SIM.costOf(rest);
+    if (cost > S.stock[type]) return false;
+    S.stock[type] -= cost;
+    SIM.addLink(a, b, type);
+    return true;
+  },
+  sim(maxSeconds = 90){
+    startTest();
+    let t = 0, peak = 0;
+    while (t < maxSeconds && S.phase === 'test'){
+      step(DT); t += DT;
+      peak = Math.max(peak, ...S.links.filter(l => !l.broken).map(l => l.stress));
+    }
+    return { phase: S.phase, across: S.across, lost: S.lost, seconds: +t.toFixed(2),
+             broken: S.links.filter(l => l.broken).length, peakStress: +peak.toFixed(2),
+             stockLeft: { ...S.stock } };
+  },
+};
+
+/* --------------------------------- boot ---------------------------------- */
+resize();
+resetLevel();
+syncHUD();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

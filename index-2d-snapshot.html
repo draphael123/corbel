@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>CORBEL</title>
+<style>
+  :root{
+    --ink:#e8e2d6;
+    --ink-dim:#9aa3a8;
+    --timber:#a8763e;
+    --rope:#c9b391;
+    --ember:#d4552a;
+    --panel:rgba(14,18,22,.78);
+    --edge:rgba(232,226,214,.14);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#0b0e12;overflow:hidden}
+  body{
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    color:var(--ink);
+    display:flex;align-items:center;justify-content:center;
+    -webkit-font-smoothing:antialiased;
+  }
+  #wrap{position:relative;line-height:0}
+  canvas{display:block;image-rendering:auto;cursor:crosshair;touch-action:none}
+
+  .hud{position:absolute;pointer-events:none;line-height:1.4;user-select:none}
+
+  #stock{top:18px;left:20px}
+  #stock .row{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+  #stock .sw{width:22px;height:5px;border-radius:1px}
+  #stock .n{font-variant-numeric:tabular-nums;font-size:19px;letter-spacing:.02em}
+  #stock .lbl{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim)}
+  #stock .row.sel .lbl{color:var(--ink)}
+  #stock .row.sel .n{text-shadow:0 0 14px currentColor}
+  #stock .row.out .n,#stock .row.out .lbl{opacity:.32}
+  #stock .key{font-size:10px;color:var(--ink-dim);opacity:.6;margin-left:2px}
+
+  #title{top:18px;left:50%;transform:translateX(-50%);text-align:center}
+  #title h1{font-size:15px;letter-spacing:.42em;font-weight:400;text-indent:.42em;opacity:.85}
+  #title .sub{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim);margin-top:5px;opacity:.75}
+
+  #crossing{top:18px;right:20px;text-align:right}
+  #crossing .n{font-size:19px;font-variant-numeric:tabular-nums}
+  #crossing .lbl{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim)}
+  #crossing .lost{color:var(--ember);opacity:0;transition:opacity .4s}
+  #crossing.any-lost .lost{opacity:1}
+
+  #hint{bottom:16px;left:50%;transform:translateX(-50%);text-align:center;
+    font-size:11.5px;letter-spacing:.13em;color:var(--ink-dim);opacity:.7}
+  #hint b{color:var(--ink);font-weight:400;letter-spacing:.16em}
+
+  #verdict{inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;
+    opacity:0;transition:opacity .55s ease;gap:10px}
+  #verdict.on{opacity:1}
+  #verdict .big{font-size:34px;letter-spacing:.3em;text-indent:.3em;font-weight:400}
+  #verdict .small{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim)}
+  #verdict.fail .big{color:var(--ember)}
+
+  #banner{top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;
+    opacity:0;transition:opacity .5s}
+  #banner.on{opacity:1}
+  #banner .t{font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:var(--ink-dim)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+
+  <div class="hud" id="stock">
+    <div class="row" id="rowTimber">
+      <div class="sw" style="background:var(--timber)"></div>
+      <span class="n" id="nTimber">0</span>
+      <span class="lbl">timber</span><span class="key">1</span>
+    </div>
+    <div class="row" id="rowRope">
+      <div class="sw" style="background:var(--rope);height:2px"></div>
+      <span class="n" id="nRope">0</span>
+      <span class="lbl">rope</span><span class="key">2</span>
+    </div>
+  </div>
+
+  <div class="hud" id="title">
+    <h1>CORBEL</h1>
+    <div class="sub" id="levelName">The First Crossing</div>
+  </div>
+
+  <div class="hud" id="crossing">
+    <div><span class="n" id="nAcross">0</span><span class="n" style="opacity:.4">/</span><span class="n" id="nTotal">0</span></div>
+    <div class="lbl">across</div>
+    <div class="lbl lost"><span id="nLost">0</span> lost</div>
+  </div>
+
+  <div class="hud" id="hint"></div>
+  <div class="hud" id="banner"><div class="t" id="bannerText"></div></div>
+  <div class="hud" id="verdict"><div class="big" id="vBig"></div><div class="small" id="vSmall"></div></div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   CORBEL — build a bridge of timber and rope; hold it while people cross.
+   Single-file slice: one gap, full build → test → hold-or-fail loop.
+   ========================================================================== */
+
+/* ---------------------------------- tuning ------------------------------- */
+const W = 1280, H = 720;
+const CELL = 40;                 // build grid + the unit of material
+const DT = 1/60;
+const SUBSTEPS = 3;
+const ITER = 14;                 // constraint relaxation passes per substep
+
+const GRAV = 1500;
+const DRAG = 0.995;
+
+const BEAM_STIFF = 1.0;
+const ROPE_STIFF = 0.85;
+
+const MAX_BEAM = CELL * 4;       // longest single timber
+const MAX_ROPE = CELL * 9;       // rope spans much further
+const NODE_SNAP = 15;            // px radius to grab an existing node
+
+// Live balance knobs. Kept mutable and exposed on window.CORBEL so a headless
+// sweep can find values without a reload — this is the part that needs
+// re-tuning every time a level is added.
+const TUNE = {
+  beamCap: 6.8,      // timber strength
+  ropeCap: 4.4,      // rope strength
+  walkerLoad: 4.5,   // how heavy a person is against the structure
+};
+// Calibrated headlessly: a bare 4-beam deck stands under self-weight (0.45),
+// bows, then gives at ~4s with two people on it. A Warren truss swings
+// 0.16→0.37 loaded and holds all twelve. Re-check both after any level change.
+
+// Longer members buckle sooner — this is the whole reason triangulation beats
+// one heroic span.
+function capacity(l){
+  const base = l.type === 'rope' ? TUNE.ropeCap : TUNE.beamCap;
+  return base / (0.55 + l.rest / (CELL * 3));
+}
+
+const NODE_MASS = 1.0;
+const WALKER_R = 8.5;
+const WALKER_SPEED = 62;
+const WALKER_PUSH = 0.55;        // how much of a walker's penetration the deck absorbs
+// People walk on the deck, not up the trusswork. Anything steeper than this is
+// structure they pass by, so a diagonal brace never becomes a wall.
+const WALKABLE_RISE = 1.2;
+const STUCK_LIMIT = 4;           // seconds of no progress before they're stranded
+
+/* ---------------------------------- terrain ------------------------------ */
+const DECK_Y   = 400;
+const LEFT_EDGE  = 480;
+const RIGHT_EDGE = 800;
+const GOAL_X   = 880;            // walked past this = safe
+const SPAWN_X  = 300;
+
+/* ---------------------------------- level -------------------------------- */
+const LEVEL = {
+  name: "The First Crossing",
+  timber: 34,
+  rope: 20,
+  walkers: 12,
+  anchors: [
+    [LEFT_EDGE, DECK_Y], [LEFT_EDGE - CELL, DECK_Y],
+    [RIGHT_EDGE, DECK_Y], [RIGHT_EDGE + CELL, DECK_Y],
+  ],
+};
+
+/* ---------------------------------- state -------------------------------- */
+const S = {
+  phase: 'build',                // build | test | won | lost
+  points: [],
+  links: [],
+  walkers: [],
+  debris: [],
+  stock: { beam: 0, rope: 0 },
+  tool: 'beam',
+  drag: null,                    // {from, x, y}
+  hover: null,
+  across: 0, lost: 0, spawned: 0,
+  spawnTimer: 0,
+  settle: 0,
+  shake: 0,
+  t: 0,
+  snapshot: null,                // build-phase geometry, restored on reset
+};
+
+/* ---------------------------------- model -------------------------------- */
+function addPoint(x, y, pinned){
+  const p = { x, y, px: x, py: y, invMass: pinned ? 0 : 1 / NODE_MASS, pinned: !!pinned };
+  S.points.push(p);
+  return S.points.length - 1;
+}
+
+function findPoint(x, y, r = NODE_SNAP){
+  let best = -1, bd = r * r;
+  for (let i = 0; i < S.points.length; i++){
+    const p = S.points[i];
+    const d = (p.x - x) ** 2 + (p.y - y) ** 2;
+    if (d < bd){ bd = d; best = i; }
+  }
+  return best;
+}
+
+function linkExists(a, b){
+  return S.links.some(l => !l.dead && ((l.a === a && l.b === b) || (l.a === b && l.b === a)));
+}
+
+function addLink(a, b, type){
+  const pa = S.points[a], pb = S.points[b];
+  const rest = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+  S.links.push({ a, b, rest, type, load: 0, stress: 0, broken: false, dead: false });
+  return S.links[S.links.length - 1];
+}
+
+function costOf(rest){ return Math.max(1, Math.round(rest / CELL)); }
+
+/* ------------------------------ build actions ---------------------------- */
+function snapGrid(x, y){
+  return [Math.round(x / CELL) * CELL, Math.round(y / CELL) * CELL];
+}
+
+// Solid rock — can't drop a new node inside the cliff.
+function inRock(x, y){
+  if (y < DECK_Y - 0.5) return false;
+  if (x <= LEFT_EDGE)  return true;
+  if (x >= RIGHT_EDGE) return true;
+  return false;
+}
+
+function proposal(x, y){
+  // What would happen if the player released the drag here?
+  if (!S.drag) return null;
+  const from = S.drag.from;
+  let to = findPoint(x, y);
+  let np = null;
+  if (to < 0){
+    const [gx, gy] = snapGrid(x, y);
+    to = findPoint(gx, gy, 1);
+    if (to < 0) np = [gx, gy];
+  }
+  const pa = S.points[from];
+  const tx = np ? np[0] : S.points[to].x;
+  const ty = np ? np[1] : S.points[to].y;
+  const rest = Math.hypot(tx - pa.x, ty - pa.y);
+  const cost = costOf(rest);
+  const maxLen = S.tool === 'rope' ? MAX_ROPE : MAX_BEAM;
+
+  let bad = null;
+  if (!np && to === from)            bad = 'same';
+  else if (rest < CELL * 0.5)        bad = 'short';
+  else if (rest > maxLen + 0.5)      bad = 'long';
+  else if (np && inRock(tx, ty))     bad = 'rock';
+  else if (!np && linkExists(from, to)) bad = 'dup';
+  else if (cost > S.stock[S.tool])   bad = 'stock';
+
+  return { from, to, np, tx, ty, rest, cost, bad };
+}
+
+function commit(x, y){
+  const pr = proposal(x, y);
+  S.drag = null;
+  if (!pr || pr.bad) return false;
+  const to = pr.np ? addPoint(pr.np[0], pr.np[1], false) : pr.to;
+  addLink(pr.from, to, S.tool);
+  S.stock[S.tool] -= pr.cost;
+  return true;
+}
+
+function removeLinkAt(x, y){
+  let best = -1, bd = 10;
+  for (let i = 0; i < S.links.length; i++){
+    const l = S.links[i];
+    if (l.dead) continue;
+    const a = S.points[l.a], b = S.points[l.b];
+    const d = distToSeg(x, y, a.x, a.y, b.x, b.y);
+    if (d < bd){ bd = d; best = i; }
+  }
+  if (best < 0) return false;
+  const l = S.links[best];
+  S.stock[l.type] += costOf(l.rest);
+  l.dead = true;
+  pruneOrphans();
+  return true;
+}
+
+function pruneOrphans(){
+  // Drop unpinned nodes that nothing connects to any more, so the canvas
+  // doesn't fill up with invisible litter.
+  const used = new Set();
+  for (const l of S.links) if (!l.dead){ used.add(l.a); used.add(l.b); }
+  const keep = [], remap = new Array(S.points.length).fill(-1);
+  for (let i = 0; i < S.points.length; i++){
+    if (S.points[i].pinned || used.has(i)){ remap[i] = keep.length; keep.push(S.points[i]); }
+  }
+  for (const l of S.links) if (!l.dead){ l.a = remap[l.a]; l.b = remap[l.b]; }
+  S.points = keep;
+  S.links = S.links.filter(l => !l.dead);
+}
+
+/* -------------------------------- physics -------------------------------- */
+function integrate(dt){
+  for (const p of S.points){
+    if (p.invMass === 0) continue;
+    const vx = (p.x - p.px) * DRAG;
+    const vy = (p.y - p.py) * DRAG;
+    p.px = p.x; p.py = p.y;
+    p.x += vx;
+    p.y += vy + GRAV * dt * dt;
+  }
+}
+
+function solve(){
+  for (const l of S.links) l.load = 0;
+
+  for (let it = 0; it < ITER; it++){
+    for (const l of S.links){
+      if (l.broken) continue;
+      const a = S.points[l.a], b = S.points[l.b];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 1e-6;
+      const diff = d - l.rest;
+      if (l.type === 'rope' && diff <= 0) continue;   // cable only pulls
+      const w = a.invMass + b.invMass;
+      if (w === 0) continue;
+      const k = l.type === 'rope' ? ROPE_STIFF : BEAM_STIFF;
+      const corr = (diff / d) * k / w;
+      const cx = dx * corr, cy = dy * corr;
+      a.x += cx * a.invMass; a.y += cy * a.invMass;
+      b.x -= cx * b.invMass; b.y -= cy * b.invMass;
+      // Total correction is a clean proxy for the force running through the
+      // member — this is what paints the stress colours.
+      l.load += Math.abs(diff) * k;
+    }
+  }
+}
+
+function updateStress(breakable){
+  for (const l of S.links){
+    if (l.broken) continue;
+    const raw = l.load / capacity(l);
+    l.stress += (raw - l.stress) * 0.18;             // smooth out single-frame spikes
+    if (breakable && l.stress > 1){
+      l.broken = true;
+      S.shake = Math.min(14, S.shake + 6);
+      spawnSnapDebris(l);
+    }
+  }
+}
+
+function spawnSnapDebris(l){
+  const a = S.points[l.a], b = S.points[l.b];
+  const n = 3 + Math.floor(l.rest / CELL);
+  for (let i = 0; i < n; i++){
+    const t = (i + 0.5) / n;
+    S.debris.push({
+      x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
+      vx: (Math.random() - 0.5) * 70, vy: -Math.random() * 60,
+      rot: Math.random() * 6.28, vr: (Math.random() - 0.5) * 7,
+      len: CELL * 0.5 * (0.5 + Math.random() * 0.6),
+      type: l.type, life: 1,
+    });
+  }
+}
+
+/* -------------------------------- walkers -------------------------------- */
+function makeWalker(i){
+  return {
+    x: SPAWN_X - i * 4, y: DECK_Y - WALKER_R - 1,
+    vx: 0, vy: 0, r: WALKER_R,
+    grounded: false, safe: false, fell: false, stranded: false,
+    maxX: SPAWN_X - i * 4, stuckT: 0,
+    // a little variety so the crowd doesn't read as clones
+    h: 15 + Math.random() * 5,
+    bulk: 0.75 + Math.random() * 0.5,
+    pack: Math.random() < 0.55,
+    child: Math.random() < 0.18,
+    phase: Math.random() * 6.28,
+    bob: 0,
+  };
+}
+
+function stepWalker(w, dt){
+  if (w.safe || w.fell) return;
+
+  w.vy += GRAV * dt;
+  w.x += w.vx * dt;
+  w.y += w.vy * dt;
+  w.grounded = false;
+
+  // solid cliff tops
+  if (w.x < LEFT_EDGE || w.x > RIGHT_EDGE){
+    const floor = DECK_Y - w.r;
+    if (w.y > floor){ w.y = floor; if (w.vy > 0) w.vy = 0; w.grounded = true; }
+  }
+
+  // the bridge itself
+  for (const l of S.links){
+    if (l.broken) continue;
+    const a = S.points[l.a], b = S.points[l.b];
+    const abx = b.x - a.x, aby = b.y - a.y;
+    const len2 = abx * abx + aby * aby;
+    if (len2 < 1e-6) continue;
+    if (Math.abs(aby) > Math.abs(abx) * WALKABLE_RISE) continue;   // too steep to walk
+    let t = ((w.x - a.x) * abx + (w.y - a.y) * aby) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const cx = a.x + abx * t, cy = a.y + aby * t;
+    let dx = w.x - cx, dy = w.y - cy;
+    let d = Math.hypot(dx, dy);
+    if (d >= w.r) continue;
+    if (d < 1e-6){ d = 1e-6; dx = 0; dy = -1; }
+    const nx = dx / d, ny = dy / d;
+    const pen = w.r - d;
+
+    w.x += nx * pen * (1 - WALKER_PUSH);
+    w.y += ny * pen * (1 - WALKER_PUSH);
+    const vn = w.vx * nx + w.vy * ny;
+    if (vn < 0){ w.vx -= nx * vn; w.vy -= ny * vn; }
+    if (ny < -0.45) w.grounded = true;
+
+    // Reaction into the structure. Gravity keeps re-penetrating each substep,
+    // so this is exactly how the crowd's weight reaches the timber.
+    const s = pen * WALKER_PUSH * w.bulk * TUNE.walkerLoad;
+    if (a.invMass > 0){ a.x -= nx * s * (1 - t); a.y -= ny * s * (1 - t); }
+    if (b.invMass > 0){ b.x -= nx * s * t;       b.y -= ny * s * t; }
+  }
+
+  if (w.grounded) w.vx += (WALKER_SPEED - w.vx) * 0.14;
+  else            w.vx *= 0.994;
+
+  w.bob += Math.abs(w.vx) * dt * 0.42;
+
+  // Stranding. Guarantees the test always resolves, and someone stopped dead
+  // at the lip of the gorge is a failure whether or not they fell.
+  if (w.x > w.maxX + 1.5){ w.maxX = w.x; w.stuckT = 0; }
+  else if (!w.stranded){
+    w.stuckT += dt;
+    if (w.stuckT > STUCK_LIMIT){ w.stranded = true; S.lost++; }
+  }
+
+  if (w.x > GOAL_X){ w.safe = true; S.across++; }
+  if (w.y > H + 80 && !w.fell){
+    w.fell = true;
+    if (!w.stranded) S.lost++;
+    S.shake = Math.min(16, S.shake + 4);
+  }
+}
+
+/* --------------------------------- phases -------------------------------- */
+function snapshotBuild(){
+  S.snapshot = {
+    points: S.points.map(p => ({ x: p.x, y: p.y, pinned: p.pinned })),
+    links: S.links.map(l => ({ a: l.a, b: l.b, rest: l.rest, type: l.type })),
+  };
+}
+
+function restoreBuild(){
+  if (!S.snapshot) return;
+  S.points = S.snapshot.points.map(p => ({
+    x: p.x, y: p.y, px: p.x, py: p.y,
+    invMass: p.pinned ? 0 : 1 / NODE_MASS, pinned: p.pinned,
+  }));
+  S.links = S.snapshot.links.map(l => ({
+    a: l.a, b: l.b, rest: l.rest, type: l.type,
+    load: 0, stress: 0, broken: false, dead: false,
+  }));
+}
+
+function startTest(){
+  if (S.phase !== 'build') return;
+  if (!S.links.length){ flash("Nothing to cross"); return; }
+  snapshotBuild();
+  S.phase = 'test';
+  S.walkers = []; S.debris = [];
+  S.across = 0; S.lost = 0; S.spawned = 0; S.spawnTimer = 0; S.settle = 0;
+  setVerdict(null);
+  flash(null);
+}
+
+function backToBuild(){
+  restoreBuild();
+  S.phase = 'build';
+  S.walkers = []; S.debris = [];
+  S.across = 0; S.lost = 0; S.spawned = 0;
+  S.drag = null;
+  setVerdict(null);
+}
+
+function resetLevel(){
+  S.points = []; S.links = []; S.walkers = []; S.debris = [];
+  S.snapshot = null;
+  S.stock.beam = LEVEL.timber;
+  S.stock.rope = LEVEL.rope;
+  for (const [x, y] of LEVEL.anchors) addPoint(x, y, true);
+  S.phase = 'build';
+  S.across = 0; S.lost = 0; S.spawned = 0;
+  setVerdict(null);
+}
+
+/* ---------------------------------- step --------------------------------- */
+function step(dt){
+  S.t += dt;
+  S.shake *= 0.9;
+
+  if (S.phase === 'test' || S.phase === 'won' || S.phase === 'lost'){
+    const sd = dt / SUBSTEPS;
+    for (let s = 0; s < SUBSTEPS; s++){
+      integrate(sd);
+      solve();
+      for (const w of S.walkers) stepWalker(w, sd);
+    }
+    updateStress(true);
+
+    if (S.phase === 'test'){
+      S.spawnTimer -= dt;
+      if (S.spawned < LEVEL.walkers && S.spawnTimer <= 0){
+        S.walkers.push(makeWalker(S.spawned));
+        S.spawned++;
+        S.spawnTimer = 0.85;
+      }
+      const done = S.spawned >= LEVEL.walkers &&
+                   S.walkers.every(w => w.safe || w.fell || w.stranded);
+      if (done){
+        S.settle += dt;
+        if (S.settle > 0.6) S.phase = S.lost > 0 ? 'lost' : 'won';
+      }
+    }
+  } else {
+    // Build phase: let the structure hang under its own weight so the player
+    // can read sag and stress before committing anyone to it.
+    const sd = dt / SUBSTEPS;
+    for (let s = 0; s < SUBSTEPS; s++){ integrate(sd); solve(); }
+    updateStress(false);
+  }
+
+  for (const d of S.debris){
+    d.vy += GRAV * dt;
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    d.rot += d.vr * dt;
+    if (d.y > H + 60) d.life = 0;
+  }
+  S.debris = S.debris.filter(d => d.life > 0);
+
+  syncHUD();
+}
+
+/* --------------------------------- render -------------------------------- */
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+function fit(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  cv.width = Math.round(W * s * dpr);
+  cv.height = Math.round(H * s * dpr);
+  cv.style.width = Math.round(W * s) + 'px';
+  cv.style.height = Math.round(H * s) + 'px';
+  document.getElementById('wrap').style.width = Math.round(W * s) + 'px';
+  ctx.setTransform(s * dpr, 0, 0, s * dpr, 0, 0);
+  cv.dataset.scale = s;
+}
+window.addEventListener('resize', fit);
+
+function toWorld(e){
+  const r = cv.getBoundingClientRect();
+  const s = parseFloat(cv.dataset.scale) || 1;
+  return [(e.clientX - r.left) / s, (e.clientY - r.top) / s];
+}
+
+/* --- terrain paths, built once ------------------------------------------- */
+function cliffPath(side){
+  // Jagged, undercut faces so the gorge widens as it drops.
+  const p = new Path2D();
+  const rnd = mulberry(side === 'L' ? 7 : 13);
+  if (side === 'L'){
+    p.moveTo(-10, H + 10); p.lineTo(-10, DECK_Y); p.lineTo(LEFT_EDGE, DECK_Y);
+    let x = LEFT_EDGE;
+    for (let y = DECK_Y; y < H + 20; y += 46){
+      x -= 4 + rnd() * 20;
+      p.lineTo(x, y);
+    }
+    p.lineTo(x - 40, H + 10);
+  } else {
+    p.moveTo(W + 10, H + 10); p.lineTo(W + 10, DECK_Y); p.lineTo(RIGHT_EDGE, DECK_Y);
+    let x = RIGHT_EDGE;
+    for (let y = DECK_Y; y < H + 20; y += 46){
+      x += 4 + rnd() * 20;
+      p.lineTo(x, y);
+    }
+    p.lineTo(x + 40, H + 10);
+  }
+  p.closePath();
+  return p;
+}
+function mulberry(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const CLIFF_L = cliffPath('L');
+const CLIFF_R = cliffPath('R');
+
+const FAR_RIDGE = (() => {
+  const rnd = mulberry(29);
+  const pts = [];
+  for (let x = -20; x <= W + 20; x += 34){
+    pts.push([x, 300 + Math.sin(x * 0.006) * 26 + rnd() * 34]);
+  }
+  return pts;
+})();
+
+function distToSeg(px, py, ax, ay, bx, by){
+  const abx = bx - ax, aby = by - ay;
+  const len2 = abx * abx + aby * aby;
+  let t = len2 < 1e-9 ? 0 : ((px - ax) * abx + (py - ay) * aby) / len2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(px - (ax + abx * t), py - (ay + aby * t));
+}
+
+function stressColor(s){
+  // timber at rest → amber under load → hot red at the edge of failure
+  const k = Math.max(0, Math.min(1, s));
+  if (k < 0.55){
+    const u = k / 0.55;
+    return `rgb(${168 + 33 * u | 0},${118 - 4 * u | 0},${62 - 14 * u | 0})`;
+  }
+  const u = (k - 0.55) / 0.45;
+  return `rgb(${201 + 34 * u | 0},${114 - 45 * u | 0},${48 - 8 * u | 0})`;
+}
+
+function draw(){
+  const sh = S.shake;
+  ctx.save();
+  if (sh > 0.3) ctx.translate((Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh);
+
+  /* sky */
+  const sky = ctx.createLinearGradient(0, 0, 0, DECK_Y + 60);
+  sky.addColorStop(0,   '#1b2530');
+  sky.addColorStop(0.45,'#3d4c58');
+  sky.addColorStop(0.78,'#7d8890');
+  sky.addColorStop(1,   '#a9a396');
+  ctx.fillStyle = sky;
+  ctx.fillRect(-20, -20, W + 40, H + 40);
+
+  /* the thing they are fleeing — an ember glow low on the left horizon */
+  const glow = ctx.createRadialGradient(120, 330, 10, 120, 330, 420);
+  const pulse = 0.5 + 0.5 * Math.sin(S.t * 0.7);
+  glow.addColorStop(0, `rgba(212,85,42,${0.30 + pulse * 0.07})`);
+  glow.addColorStop(0.4, 'rgba(180,70,40,0.10)');
+  glow.addColorStop(1, 'rgba(180,70,40,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(-20, 60, 700, 400);
+
+  /* smoke columns */
+  ctx.globalAlpha = 0.24;
+  ctx.fillStyle = '#242b33';
+  for (let i = 0; i < 5; i++){
+    const bx = 40 + i * 62, lean = Math.sin(S.t * 0.25 + i) * 16;
+    ctx.beginPath();
+    ctx.moveTo(bx - 9, 340);
+    ctx.quadraticCurveTo(bx - 22 + lean, 210, bx - 6 + lean * 1.7, 70);
+    ctx.lineTo(bx + 16 + lean * 1.7, 70);
+    ctx.quadraticCurveTo(bx + 24 + lean, 215, bx + 11, 340);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  /* far ridge */
+  ctx.fillStyle = '#4a5560';
+  ctx.beginPath();
+  ctx.moveTo(-20, H);
+  for (const [x, y] of FAR_RIDGE) ctx.lineTo(x, y);
+  ctx.lineTo(W + 20, H);
+  ctx.closePath();
+  ctx.fill();
+
+  /* gorge void */
+  const void_ = ctx.createLinearGradient(0, DECK_Y - 30, 0, H);
+  void_.addColorStop(0, '#39434e');
+  void_.addColorStop(0.55, '#1d242c');
+  void_.addColorStop(1, '#0d1116');
+  ctx.fillStyle = void_;
+  ctx.fillRect(LEFT_EDGE - 120, DECK_Y - 40, RIGHT_EDGE - LEFT_EDGE + 240, H);
+
+  /* drifting mist in the chasm */
+  for (let i = 0; i < 6; i++){
+    const y = DECK_Y + 70 + i * 58;
+    const off = Math.sin(S.t * 0.16 + i * 1.7) * 60;
+    ctx.globalAlpha = 0.09 + i * 0.012;
+    ctx.fillStyle = '#b8c6cc';
+    ctx.beginPath();
+    ctx.ellipse(W / 2 + off, y, 340 - i * 12, 15 + i * 2.5, 0, 0, 6.284);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  drawDebris();
+  drawStructure();
+  drawWalkers();
+
+  /* near cliffs, drawn last so they occlude the span ends */
+  ctx.fillStyle = '#161c23';
+  ctx.fill(CLIFF_L); ctx.fill(CLIFF_R);
+  ctx.strokeStyle = 'rgba(200,214,222,.16)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-10, DECK_Y); ctx.lineTo(LEFT_EDGE, DECK_Y);
+  ctx.moveTo(RIGHT_EDGE, DECK_Y); ctx.lineTo(W + 10, DECK_Y);
+  ctx.stroke();
+
+  drawAnchors();
+  if (S.phase === 'build') drawBuildOverlay();
+
+  ctx.restore();
+
+  /* vignette */
+  const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, H * 0.95);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawStructure(){
+  // rope first, so timber reads on top
+  for (const pass of ['rope', 'beam']){
+    for (const l of S.links){
+      if (l.type !== pass) continue;
+      const a = S.points[l.a], b = S.points[l.b];
+      if (l.broken){
+        ctx.strokeStyle = 'rgba(90,80,72,.30)';
+        ctx.lineWidth = pass === 'rope' ? 1.5 : 3;
+        ctx.setLineDash([3, 6]);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.setLineDash([]);
+        continue;
+      }
+      if (pass === 'rope'){
+        const d = Math.hypot(b.x - a.x, b.y - a.y);
+        const slack = Math.max(0, l.rest - d);
+        ctx.strokeStyle = l.stress > 0.05
+          ? stressColor(Math.max(l.stress, 0.15))
+          : 'rgba(201,179,145,.85)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        if (slack > 1){
+          // hang the catenary belly when the cable isn't taut
+          ctx.quadraticCurveTo((a.x + b.x) / 2, (a.y + b.y) / 2 + slack * 1.5, b.x, b.y);
+        } else {
+          ctx.lineTo(b.x, b.y);
+        }
+        ctx.stroke();
+      } else {
+        const c = stressColor(l.stress);
+        if (l.stress > 0.7){
+          ctx.shadowColor = c;
+          ctx.shadowBlur = 10 * (l.stress - 0.7) / 0.3;
+        }
+        ctx.strokeStyle = c;
+        ctx.lineWidth = 6;
+        ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.shadowBlur = 0;
+        // grain highlight
+        ctx.strokeStyle = 'rgba(255,236,208,.14)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+    }
+  }
+
+  /* joints */
+  for (let i = 0; i < S.points.length; i++){
+    const p = S.points[i];
+    if (p.pinned) continue;
+    ctx.fillStyle = '#5d4326';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 3.6, 0, 6.284); ctx.fill();
+    ctx.fillStyle = 'rgba(255,230,196,.35)';
+    ctx.beginPath(); ctx.arc(p.x - 0.8, p.y - 0.8, 1.4, 0, 6.284); ctx.fill();
+  }
+}
+
+function drawAnchors(){
+  for (const p of S.points){
+    if (!p.pinned) continue;
+    ctx.fillStyle = '#8d949a';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 5.5, 0, 6.284); ctx.fill();
+    ctx.strokeStyle = 'rgba(232,226,214,.5)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 8.5, 0, 6.284); ctx.stroke();
+  }
+}
+
+function drawWalkers(){
+  for (const w of S.walkers){
+    if (w.safe) continue;
+    const bob = Math.sin(w.bob * 6 + w.phase) * 1.5;
+    const h = w.h * (w.child ? 0.62 : 1);
+    const lean = w.fell ? 0.5 : Math.min(0.28, Math.abs(w.vx) * 0.003);
+    ctx.save();
+    ctx.translate(w.x, w.y + bob);
+    ctx.rotate(lean);
+    ctx.fillStyle = '#0f1318';
+
+    // body
+    ctx.beginPath();
+    ctx.moveTo(-3.4 * w.bulk, 4);
+    ctx.quadraticCurveTo(-4.6 * w.bulk, -h * 0.5, -2.4, -h);
+    ctx.lineTo(2.4, -h);
+    ctx.quadraticCurveTo(4.6 * w.bulk, -h * 0.5, 3.4 * w.bulk, 4);
+    ctx.closePath();
+    ctx.fill();
+    // head
+    ctx.beginPath(); ctx.arc(0, -h - 3.2, 3.1, 0, 6.284); ctx.fill();
+    // everything they still own
+    if (w.pack){
+      ctx.beginPath();
+      ctx.ellipse(-5.2, -h * 0.62, 3.6, 4.4, -0.3, 0, 6.284);
+      ctx.fill();
+    }
+    // legs
+    const stride = Math.sin(w.bob * 6 + w.phase) * 3.2;
+    ctx.strokeStyle = '#0f1318';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, 3); ctx.lineTo(stride, 8.5);
+    ctx.moveTo(0, 3); ctx.lineTo(-stride, 8.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawDebris(){
+  for (const d of S.debris){
+    ctx.save();
+    ctx.translate(d.x, d.y); ctx.rotate(d.rot);
+    ctx.strokeStyle = d.type === 'rope' ? 'rgba(201,179,145,.7)' : 'rgba(139,98,54,.85)';
+    ctx.lineWidth = d.type === 'rope' ? 2 : 5;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-d.len / 2, 0); ctx.lineTo(d.len / 2, 0); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawBuildOverlay(){
+  /* grid, only across the buildable air */
+  ctx.strokeStyle = 'rgba(200,214,222,.055)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += CELL){ ctx.moveTo(x, 0); ctx.lineTo(x, DECK_Y); }
+  for (let y = 0; y <= DECK_Y; y += CELL){ ctx.moveTo(LEFT_EDGE - 120, y); ctx.lineTo(RIGHT_EDGE + 120, y); }
+  ctx.stroke();
+
+  /* snap candidate under the cursor */
+  if (S.hover && !S.drag){
+    const i = findPoint(S.hover[0], S.hover[1]);
+    if (i >= 0){
+      const p = S.points[i];
+      ctx.strokeStyle = 'rgba(232,226,214,.75)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, 6.284); ctx.stroke();
+    }
+  }
+
+  /* the pending member */
+  if (S.drag && S.hover){
+    const pr = proposal(S.hover[0], S.hover[1]);
+    if (!pr) return;
+    const a = S.points[pr.from];
+    const ok = !pr.bad;
+    ctx.setLineDash(ok ? [] : [6, 5]);
+    ctx.strokeStyle = ok
+      ? (S.tool === 'rope' ? 'rgba(201,179,145,.9)' : 'rgba(200,150,80,.95)')
+      : 'rgba(212,85,42,.85)';
+    ctx.lineWidth = S.tool === 'rope' ? 2 : 5;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(pr.tx, pr.ty); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = ok ? 'rgba(232,226,214,.9)' : 'rgba(212,85,42,.95)';
+    ctx.beginPath(); ctx.arc(pr.tx, pr.ty, 4, 0, 6.284); ctx.fill();
+
+    const label = pr.bad === 'long'  ? (S.tool === 'rope' ? 'too long' : 'timber too long')
+                : pr.bad === 'stock' ? 'not enough ' + (S.tool === 'rope' ? 'rope' : 'timber')
+                : pr.bad === 'rock'  ? 'solid rock'
+                : pr.bad === 'dup'   ? 'already joined'
+                : pr.bad ? '' : pr.cost + (S.tool === 'rope' ? ' rope' : ' timber');
+    if (label){
+      ctx.font = '12px ui-monospace,Menlo,Consolas,monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = ok ? 'rgba(232,226,214,.8)' : 'rgba(212,85,42,.95)';
+      ctx.fillText(label, (a.x + pr.tx) / 2, (a.y + pr.ty) / 2 - 12);
+      ctx.textAlign = 'left';
+    }
+  }
+}
+
+/* ----------------------------------- HUD --------------------------------- */
+const el = id => document.getElementById(id);
+function syncHUD(){
+  el('nTimber').textContent = S.stock.beam;
+  el('nRope').textContent   = S.stock.rope;
+  el('rowTimber').className = 'row' + (S.tool === 'beam' ? ' sel' : '') + (S.stock.beam ? '' : ' out');
+  el('rowRope').className   = 'row' + (S.tool === 'rope' ? ' sel' : '') + (S.stock.rope ? '' : ' out');
+  el('nAcross').textContent = S.across;
+  el('nTotal').textContent  = LEVEL.walkers;
+  el('nLost').textContent   = S.lost;
+  el('crossing').className  = 'hud' + (S.lost ? ' any-lost' : '');
+  el('levelName').textContent = LEVEL.name;
+
+  el('hint').innerHTML = S.phase === 'build'
+    ? 'drag between joints to build &nbsp;·&nbsp; <b>1</b> timber &nbsp; <b>2</b> rope &nbsp;·&nbsp; right-click removes &nbsp;·&nbsp; <b>space</b> to send them across'
+    : S.phase === 'test'
+      ? '<b>space</b> to call it off'
+      : '<b>space</b> to go back and rebuild &nbsp;·&nbsp; <b>R</b> to start over';
+}
+
+function setVerdict(kind){
+  const v = el('verdict');
+  if (!kind){ v.className = 'hud'; return; }
+  v.className = 'hud on' + (kind === 'lost' ? ' fail' : '');
+  el('vBig').textContent = kind === 'won' ? 'ALL ACROSS' : 'THE SPAN GAVE';
+  el('vSmall').textContent = kind === 'won'
+    ? LEVEL.walkers + ' souls · the next crowd is larger'
+    : S.lost + (S.lost === 1 ? ' soul lost to the gorge' : ' souls lost to the gorge');
+}
+
+let flashTimer = 0;
+function flash(text){
+  const b = el('banner');
+  if (!text){ b.className = 'hud'; return; }
+  el('bannerText').textContent = text;
+  b.className = 'hud on';
+  flashTimer = 1.4;
+}
+
+/* --------------------------------- input --------------------------------- */
+cv.addEventListener('pointerdown', e => {
+  const [x, y] = toWorld(e);
+  if (S.phase !== 'build') return;
+  if (e.button === 2){ removeLinkAt(x, y); return; }
+  let i = findPoint(x, y);
+  if (i < 0){
+    const [gx, gy] = snapGrid(x, y);
+    i = findPoint(gx, gy, 1);
+    // A new member has to start from something that already exists.
+    if (i < 0) return;
+  }
+  S.drag = { from: i };
+  cv.setPointerCapture(e.pointerId);
+});
+
+cv.addEventListener('pointermove', e => { S.hover = toWorld(e); });
+
+cv.addEventListener('pointerup', e => {
+  if (S.phase !== 'build' || !S.drag) return;
+  const [x, y] = toWorld(e);
+  commit(x, y);
+});
+
+cv.addEventListener('pointerleave', () => { S.hover = null; });
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+window.addEventListener('keydown', e => {
+  if (e.key === '1'){ S.tool = 'beam'; }
+  else if (e.key === '2'){ S.tool = 'rope'; }
+  else if (e.key === 'Tab'){ e.preventDefault(); S.tool = S.tool === 'beam' ? 'rope' : 'beam'; }
+  else if (e.key === ' '){
+    e.preventDefault();
+    if (S.phase === 'build') startTest(); else backToBuild();
+  }
+  else if (e.key === 'r' || e.key === 'R'){ resetLevel(); }
+  else if (e.key === 'Escape'){ S.drag = null; }
+});
+
+/* ------------------------------- main loop -------------------------------- */
+let last = performance.now(), acc = 0, lastPaint = 0;
+
+function frame(now){
+  const raw = (now - last) / 1000;
+  last = now;
+  acc += Math.min(raw, 0.1);          // clamp so a stalled tab can't explode the sim
+  while (acc >= DT){ step(DT); acc -= DT; }
+
+  if (flashTimer > 0){
+    flashTimer -= raw;
+    if (flashTimer <= 0) flash(null);
+  }
+  if (S.phase === 'won' || S.phase === 'lost') setVerdict(S.phase);
+
+  draw();
+  lastPaint = now;
+  requestAnimationFrame(frame);
+}
+
+// RAF stops entirely in a hidden panel or background tab. This keeps the sim
+// advancing on wall-clock time and repaints once RAF comes back.
+setInterval(() => {
+  const now = performance.now();
+  if (now - lastPaint > 400){
+    const dt = Math.min((now - last) / 1000, 0.5);
+    last = now;
+    let n = Math.floor(dt / DT);
+    while (n-- > 0) step(DT);
+  }
+}, 250);
+
+/* ------------------------- headless test surface -------------------------- */
+window.CORBEL = {
+  S, LEVEL, TUNE,
+  step, draw, resetLevel, startTest, backToBuild,
+  addPoint, addLink, findPoint, capacity, costOf,
+  /** Build a member between two world points. Returns false if it can't be done. */
+  place(ax, ay, bx, by, type = 'beam'){
+    let a = findPoint(ax, ay, CELL * 0.5);
+    if (a < 0){ if (inRock(ax, ay)) return false; a = addPoint(ax, ay, false); }
+    let b = findPoint(bx, by, CELL * 0.5);
+    if (b < 0){ if (inRock(bx, by)) return false; b = addPoint(bx, by, false); }
+    if (a === b || linkExists(a, b)) return false;
+    const rest = Math.hypot(S.points[b].x - S.points[a].x, S.points[b].y - S.points[a].y);
+    const cost = costOf(rest);
+    if (cost > S.stock[type]) return false;
+    S.stock[type] -= cost;
+    addLink(a, b, type);
+    return true;
+  },
+  /** Run the whole test headlessly and report. */
+  sim(maxSeconds = 60){
+    startTest();
+    let t = 0;
+    while (t < maxSeconds && S.phase === 'test'){ step(DT); t += DT; }
+    return {
+      phase: S.phase, across: S.across, lost: S.lost,
+      seconds: +t.toFixed(2),
+      broken: S.links.filter(l => l.broken).length,
+      peakStress: +Math.max(0, ...S.links.map(l => l.stress)).toFixed(2),
+      stockLeft: { ...S.stock },
+    };
+  },
+};
+
+/* --------------------------------- boot ---------------------------------- */
+fit();
+resetLevel();
+syncHUD();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
