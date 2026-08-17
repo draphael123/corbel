@@ -27,6 +27,7 @@ let prevBroken = 0, prevLost = 0, prevAcross = 0;
 /* --------------------------------- screens -------------------------------- */
 function beginPlay(fresh){
   A.unlock();                              // must ride a user gesture
+  A.startMusic();                          // lazy 3MB fetch, optional
   if (fresh) SIM.resetLevel();
   UI.show('playing');
   if (fresh && !UI.prefs.tutorialDone) UI.startTutorial();

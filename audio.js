@@ -11,7 +11,9 @@ let noiseBuf = null;
 let windGain, windFilter, fireGain, creakGain, creakFilter, crowdGain;
 let creakTimer = 0, stressNow = 0, crowdNow = 0, windLfo = 0;
 
-export const settings = { master: 0.75, ambience: 0.8, effects: 0.9, muted: false };
+export const settings = { master: 0.75, ambience: 0.8, effects: 0.9, music: 0.55, muted: false };
+
+let musicBus, musicSrc, musicLoading = false, duck = 1;
 
 function makeNoise(seconds = 2){
   const n = ctx.sampleRate * seconds;
@@ -44,6 +46,7 @@ export function unlock(){
   master.connect(ctx.destination);
   ambBus = ctx.createGain(); ambBus.gain.value = settings.ambience; ambBus.connect(master);
   sfxBus = ctx.createGain(); sfxBus.gain.value = settings.effects; sfxBus.connect(master);
+  musicBus = ctx.createGain(); musicBus.gain.value = settings.music; musicBus.connect(master);
 
   noiseBuf = makeNoise();
 
@@ -87,7 +90,40 @@ export function applySettings(){
   master.gain.setTargetAtTime(settings.muted ? 0 : settings.master, ctx.currentTime, 0.05);
   ambBus.gain.setTargetAtTime(settings.ambience, ctx.currentTime, 0.05);
   sfxBus.gain.setTargetAtTime(settings.effects, ctx.currentTime, 0.05);
+  musicBus?.gain.setTargetAtTime(settings.music * duck, ctx.currentTime, 0.05);
 }
+
+/**
+ * The score is the one thing synthesis here cannot do well, so it is a file.
+ * Everything else stays procedural because it has to answer to the simulation.
+ * Fetched lazily on first play so a 3MB download never blocks the title screen,
+ * and entirely optional — if it fails the game carries on without it.
+ */
+export async function startMusic(url = './audio/crossing-theme.ogg'){
+  if (!ready || musicSrc || musicLoading) return false;
+  musicLoading = true;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const buf = await ctx.decodeAudioData(await res.arrayBuffer());
+    musicSrc = ctx.createBufferSource();
+    musicSrc.buffer = buf;
+    musicSrc.loop = true;
+    musicSrc.connect(musicBus);
+    musicSrc.start();
+    return true;
+  } catch (e){
+    console.warn('CORBEL: music unavailable —', e.message);
+    return false;
+  } finally { musicLoading = false; }
+}
+
+export function stopMusic(){
+  if (!musicSrc) return;
+  try { musicSrc.stop(); } catch {}
+  musicSrc = null;
+}
+export const musicPlaying = () => !!musicSrc;
 
 export function suspend(){ if (ready && ctx.state === 'running') ctx.suspend(); }
 export function resume(){ if (ready && ctx.state === 'suspended') ctx.resume(); }
@@ -175,6 +211,12 @@ export function update(stress, crowd, dt){
   windFilter.frequency.setTargetAtTime(330 + gust * 320, t, 0.5);
 
   crowdGain.gain.setTargetAtTime(Math.min(0.5, crowdNow) * 0.05, t, 0.15);
+
+  // Pull the score back as the span strains, so the creak is what you hear at
+  // the moment it matters. The music returns once the load comes off.
+  const want = 1 - Math.min(0.72, Math.max(0, stressNow - 0.25) * 1.1);
+  duck += (want - duck) * 0.04;
+  musicBus?.gain.setTargetAtTime(settings.music * duck, t, 0.2);
 
   // Creak rides load: louder, brighter and more frequent as the span strains.
   const s = Math.min(1.4, stressNow);

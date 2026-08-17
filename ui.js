@@ -10,7 +10,7 @@ let SIM, S, R, A;
 const el = id => document.getElementById(id);
 
 export const prefs = {
-  master: 0.75, ambience: 0.8, effects: 0.9, muted: false,
+  master: 0.75, ambience: 0.8, effects: 0.9, music: 0.55, muted: false,
   shadows: true, shake: true, cvdPalette: false, reducedMotion: false,
   tutorialDone: false,
 };
@@ -90,7 +90,6 @@ function longestBroken(){
   return m;
 }
 
-/** Why did this crossing fail? Returns a short, specific sentence. */
 /** Why did this crossing fail? Returns a short, specific sentence. */
 export function postMortem(){
   const stranded = S.walkers.filter(w => w.stranded).length;
@@ -242,7 +241,7 @@ export function initSettings(){
     if (!A) return;
     Object.assign(A.settings, {
       master: prefs.master, ambience: prefs.ambience,
-      effects: prefs.effects, muted: prefs.muted,
+      effects: prefs.effects, music: prefs.music, muted: prefs.muted,
     });
     A.applySettings();
   };
@@ -259,6 +258,7 @@ export function initSettings(){
   bindSlider('setMaster', 'master', applyAudio);
   bindSlider('setAmb', 'ambience', applyAudio);
   bindSlider('setSfx', 'effects', applyAudio);
+  bindSlider('setMusic', 'music', applyAudio);
   bindToggle('setMute', 'muted', applyAudio);
   bindToggle('setShadows', 'shadows', applyRender);
   bindToggle('setShake', 'shake', applyRender);
