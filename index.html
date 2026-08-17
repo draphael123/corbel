@@ -348,7 +348,13 @@ window.__corbelFail = msg => {
 window.addEventListener('error', e => window.__corbelFail(e.message));
 window.addEventListener('unhandledrejection', e => window.__corbelFail(e.reason?.message || String(e.reason)));
 setTimeout(() => { if (!window.__corbelBooted) window.__corbelFail('No frame within 8 seconds.'); }, 8000);
+
+// Version token for every local module. Defaults to "now" so a dev reload never
+// serves a stale module; pass ?v=<hash> to pin it (and to get real caching).
+window.__V = new URLSearchParams(location.search).get('v') || Date.now();
 </script>
-<script type="module" src="./main.js"></script>
+<script type="module">
+  import('./main.js?v=' + window.__V).catch(e => window.__corbelFail(e?.message || String(e)));
+</script>
 </body>
 </html>

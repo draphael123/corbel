@@ -1,13 +1,18 @@
 /* ============================================================================
    CORBEL — wiring and the main loop.
    ========================================================================== */
-import * as R from './render.js';
-import * as A from './audio.js';
-import * as UI from './ui.js';
-
-// sim.js changes constantly and the ES module cache will happily serve a stale
-// copy, which reads exactly like a code bug. Always refetch it in dev.
-const SIM = await import('./sim.js?v=' + Date.now());
+// Every local module is fetched against a version token set in index.html.
+// The ES module cache will otherwise serve a stale copy, and a stale module
+// reads exactly like a code bug — it throws at line numbers that no longer
+// exist in the file on disk. three.js is imported statically inside render.js
+// so the 1.2MB engine still caches normally. Pin __V to a build hash to ship.
+const V = window.__V || '';
+const [R, A, UI, SIM] = await Promise.all([
+  import(`./render.js?v=${V}`),
+  import(`./audio.js?v=${V}`),
+  import(`./ui.js?v=${V}`),
+  import(`./sim.js?v=${V}`),
+]);
 const S = SIM.S;
 
 const canvas = document.getElementById('c');

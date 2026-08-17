@@ -10,13 +10,22 @@ let SIM, S, CELL, W, DECK_Y, LEFT_EDGE, RIGHT_EDGE;
 let renderer, scene, camera, canvas;
 let timber, rope, joints, anchors;
 let bodies, heads, packs, armL, armR, legL, legR, limbs = [];
-let grid, ghost, snapRing, ash, ashData, mist = [], braziers = [];
+let grid, ghost, snapRing, ash, ashData, mist = [], braziers = [], smoke = [];
 let key, rim, emberLight;
 
 const MAX_MEMBERS = 420, ROPE_SEGS = 9, MAX_W = 80, ASH_N = 460;
 const DECK_Z = 0.62, WEB_Z = 0.20, WALKABLE_RISE = 1.2;
 
 let U = 40, SPAN_HALF = 4;
+// Canvas data is sRGB. Left unflagged three.js reads it as linear and every
+// texture comes out washed and too bright — it cost me a "why is the canyon
+// wall glowing" detour, so all canvas textures go through here.
+function canvasTex(cv){
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 const wx = px => (px - W / 2) / U;
 const wy = py => -(py - DECK_Y) / U;
 const px_ = x => x * U + W / 2;
@@ -170,6 +179,31 @@ function buildTerrain(){
   scene.add(cliff(-1, 7.0, -10.5, 0x1a212a, 33, false));
   scene.add(cliff( 1, 7.0, -10.5, 0x1a212a, 41, false));
 
+  // The far wall of the canyon. Without this you see sky straight through the
+  // gap and the gorge reads as a window rather than a drop — this single plane
+  // does more for depth than anything else in the scene.
+  {
+    const cv = document.createElement('canvas');
+    cv.width = 8; cv.height = 512;
+    const g = cv.getContext('2d');
+    const grad = g.createLinearGradient(0, 0, 0, 512);
+    grad.addColorStop(0.00, '#2b343d');
+    grad.addColorStop(0.14, '#1a222a');
+    grad.addColorStop(0.42, '#0e141a');
+    grad.addColorStop(1.00, '#05070a');
+    g.fillStyle = grad; g.fillRect(0, 0, 8, 512);
+    // Strata, barely there — enough to give the wall scale without reading as
+    // stripes. Irregular spacing, because evenly spaced bands look like a ladder.
+    g.globalAlpha = 0.045; g.fillStyle = '#93a7b8';
+    let yy = 26;
+    for (let i = 0; i < 14; i++){ g.fillRect(0, yy, 8, 1 + (i % 2)); yy += 22 + (i * 7) % 19; }
+    const tex = canvasTex(cv);
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(56, 27),
+      new THREE.MeshBasicMaterial({ map: tex, fog: true }));
+    back.position.set(0, -13.4, -15);       // top edge sits just under the lips
+    scene.add(back);
+  }
+
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(90, 60),
     new THREE.MeshBasicMaterial({ color: 0x05070a }));
   floor.rotation.x = -Math.PI / 2;
@@ -195,16 +229,20 @@ function buildTerrain(){
   rad.addColorStop(0.55, 'rgba(140,162,180,0.11)');
   rad.addColorStop(1, 'rgba(140,162,180,0)');
   g.fillStyle = rad; g.fillRect(0, 0, 256, 256);
-  const mistTex = new THREE.CanvasTexture(cv);
-  for (let i = 0; i < 8; i++){
+  const mistTex = canvasTex(cv);
+  // Now that there is a wall behind it, mist has something to sit against and
+  // can come back up — banded low in the chasm so it never fogs the structure.
+  for (let i = 0; i < 13; i++){
     const m = new THREE.Mesh(
-      new THREE.PlaneGeometry(18 + Math.random() * 14, 4 + Math.random() * 3),
+      new THREE.PlaneGeometry(16 + Math.random() * 16, 3.5 + Math.random() * 3),
       new THREE.MeshBasicMaterial({ map: mistTex, transparent: true, depthWrite: false,
-        opacity: 0.10 + Math.random() * 0.10, fog: true }));
-    m.position.set((Math.random() - 0.5) * 20, -5.5 - Math.random() * 10, -8 + Math.random() * 10);
+        opacity: 0.16 + Math.random() * 0.16, fog: true }));
+    m.position.set((Math.random() - 0.5) * 22, -3.6 - Math.random() * 11, -13 + Math.random() * 12);
     m.userData = { sp: 0.10 + Math.random() * 0.24, ph: Math.random() * 6.28, x0: m.position.x };
     mist.push(m); scene.add(m);
   }
+
+  buildFires();
 
   // Braziers on both lips. Warm local anchors for the eye, and they make the
   // crossing look like something people prepared for.
@@ -225,6 +263,46 @@ function buildTerrain(){
   }
 }
 
+/* --------------------------------- fires ---------------------------------- */
+// What they are running from. Placed in world space rather than painted onto the
+// sky backdrop — the backdrop is 190 units wide, so anything drawn on it lands
+// far outside the visible frame and may as well not exist.
+let fireGlow = null;
+function buildFires(){
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const g = cv.getContext('2d');
+  const rad = g.createRadialGradient(128, 168, 4, 128, 168, 124);
+  rad.addColorStop(0.00, 'rgba(255,168,86,0.95)');
+  rad.addColorStop(0.22, 'rgba(238,110,44,0.52)');
+  rad.addColorStop(0.55, 'rgba(190,70,32,0.18)');
+  rad.addColorStop(1.00, 'rgba(160,60,30,0)');
+  g.fillStyle = rad; g.fillRect(0, 0, 256, 256);
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(34, 24),
+    new THREE.MeshBasicMaterial({ map: canvasTex(cv), transparent: true,
+      depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
+  glow.position.set(-23, 3.4, -38);
+  scene.add(glow);
+  fireGlow = glow;
+
+  // Smoke standing over the fires, lit from beneath.
+  const sc = document.createElement('canvas'); sc.width = sc.height = 128;
+  const sg = sc.getContext('2d');
+  const sr = sg.createRadialGradient(64, 64, 2, 64, 64, 62);
+  sr.addColorStop(0, 'rgba(40,34,32,0.72)');
+  sr.addColorStop(1, 'rgba(30,26,26,0)');
+  sg.fillStyle = sr; sg.fillRect(0, 0, 128, 128);
+  const smokeTex = canvasTex(sc);
+  for (let i = 0; i < 9; i++){
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(9 + Math.random() * 7, 11 + Math.random() * 9),
+      new THREE.MeshBasicMaterial({ map: smokeTex, transparent: true, depthWrite: false,
+        opacity: 0.30 + Math.random() * 0.24, fog: false }));
+    m.position.set(-34 + Math.random() * 24, 7 + Math.random() * 12, -36 + Math.random() * 6);
+    m.userData = { sp: 0.05 + Math.random() * 0.1, ph: Math.random() * 6.28,
+                   x0: m.position.x, y0: m.position.y, rise: 0.25 + Math.random() * 0.4 };
+    smoke.push(m); scene.add(m);
+  }
+}
+
 /* --------------------------------- ash ------------------------------------ */
 function buildAsh(){
   const cv = document.createElement('canvas'); cv.width = cv.height = 32;
@@ -234,7 +312,7 @@ function buildAsh(){
   rad.addColorStop(0.4, 'rgba(255,190,130,0.6)');
   rad.addColorStop(1, 'rgba(255,170,110,0)');
   g.fillStyle = rad; g.fillRect(0, 0, 32, 32);
-  const tex = new THREE.CanvasTexture(cv);
+  const tex = canvasTex(cv);
 
   const pos = new Float32Array(ASH_N * 3), col = new Float32Array(ASH_N * 3);
   ashData = [];
@@ -416,7 +494,9 @@ function syncWalkers(){
     if (w.safe || n >= MAX_W) continue;
     const sc = w.child ? 0.68 : 1;
     const x = wx(w.x);
-    const feet = wy(w.y) - r;                     // collision circle sits on the deck
+    // The sim collides against a member's centreline, but the plank has real
+    // thickness — stand them on its top face, or the legs render inside the deck.
+    const feet = wy(w.y) - r + 0.095;
 
     // Gait is driven by distance covered, not by time, so nobody moonwalks when
     // the crowd bunches up or stalls.
@@ -557,6 +637,12 @@ export function frame(dt){
       b.flame.scale.setScalar(f);
       b.lt.intensity = 5 + f * 3;
     }
+    for (const m of smoke){
+      m.position.x = m.userData.x0 + Math.sin(t * m.userData.sp + m.userData.ph) * 2.4 + wind * 2.2;
+      m.position.y = m.userData.y0 + ((t * m.userData.rise + m.userData.ph * 3) % 9);
+      m.material.opacity = 0.34 * (1 - ((t * m.userData.rise + m.userData.ph * 3) % 9) / 9);
+    }
+    if (fireGlow) fireGlow.material.opacity = 0.82 + Math.sin(t * 0.8) * 0.13 + Math.sin(t * 2.7) * 0.05;
     emberLight.intensity = 24 + Math.sin(t * 0.9) * 5;
   }
   ash.visible = !opts.reducedMotion;
@@ -564,6 +650,37 @@ export function frame(dt){
   syncStructure();
   syncWalkers();
   renderer.render(scene, camera);
+}
+
+/* Tooling access. Module-scoped objects are invisible from the console
+   otherwise, and this is also the only way to grab a frame when the preview
+   pane is not compositing (no pane displayed → no RAF → no screenshot). */
+export const gfx = () => ({ renderer, scene, camera, THREE });
+
+/**
+ * Render one frame at an explicit size and return it as a data URL.
+ * The draw buffer is not preserved, so the render and the read must happen in
+ * the same tick — hence doing both in here rather than from the caller.
+ */
+export function capture(w = 1280, h = 720, quality = 0.82){
+  const prevW = renderer.domElement.width, prevH = renderer.domElement.height;
+  const prevAspect = camera.aspect;
+  renderer.setPixelRatio(1);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  const need = SPAN_HALF + 5.0;
+  const half = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  camera.position.z = Math.max(11, need / (half * camera.aspect));
+  camera.updateProjectionMatrix();
+  camera.lookAt(LOOK);
+  syncStructure(); syncWalkers();
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL('image/jpeg', quality);
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+  renderer.setSize(prevW, prevH, false);
+  camera.aspect = prevAspect;
+  camera.updateProjectionMatrix();
+  return url;
 }
 
 export function peakStress(){
